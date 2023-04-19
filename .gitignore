@@ -1,0 +1,4 @@
+build/
+.cache/
+tests/data/*.gpkg
+compile_commands.json
