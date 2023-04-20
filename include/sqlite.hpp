@@ -1,15 +1,12 @@
 #pragma once
 
-extern "C"
-{
-#include <sqlite3.h>
-}
-
 #include <algorithm>
 #include <string>
 #include <vector>
 #include <memory>
 #include <stdexcept>
+
+#include <sqlite3.h>
 
 template<typename T, typename U>
 using enabled_t = std::enable_if_t<std::is_same<T, U>::value, U>;
