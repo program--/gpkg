@@ -1,7 +1,5 @@
 #pragma once
 
-#include <iostream>
-#include <sstream>
 extern "C"
 {
 #include <sqlite3.h>
@@ -11,6 +9,7 @@ extern "C"
 #include <string>
 #include <vector>
 #include <memory>
+#include <stdexcept>
 
 #define GETENABLE(TYPE) typename std::enable_if<std::is_same<T, TYPE>::value, TYPE>::type
 
