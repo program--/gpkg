@@ -1,16 +1,18 @@
 #pragma once
 
+#include <iostream>
+#include <sstream>
 extern "C"
 {
 #include <sqlite3.h>
 }
 
-#include <iterator>
+#include <algorithm>
 #include <string>
-#include <stdexcept>
 #include <vector>
-#include <functional>
 #include <memory>
+
+#define GETENABLE(TYPE) typename std::enable_if<std::is_same<T, TYPE>::value, TYPE>::type
 
 struct sqlite_deleter
 {
@@ -21,29 +23,51 @@ struct sqlite_deleter
 using sqlite_t = std::unique_ptr<sqlite3, sqlite_deleter>;
 using stmt_t   = std::shared_ptr<sqlite3_stmt>;
 
+inline std::runtime_error sqlite_error(std::string f, int code)
+{
+    std::string errmsg = f + " returned code " + std::to_string(code);
+    return std::runtime_error(errmsg);
+}
+
 class sqlite_iter
 {
   private:
-    stmt_t        stmt     = nullptr;
-    bool          finished = false;
+    stmt_t stmt;
+    int    iteration_step     = -1;
+    bool   iteration_finished = false;
 
-    sqlite3_stmt* ptr() { return this->stmt.get(); }
+    // column metadata
+    int                      column_count = 0;
+    std::vector<std::string> column_names;
+
+    // returns the raw pointer to the sqlite statement
+    sqlite3_stmt* ptr() const noexcept { return this->stmt.get(); }
 
   public:
     sqlite_iter(stmt_t stmt)
-      : stmt(stmt){};
+      : stmt(stmt)
+    {
+        this->column_count = sqlite3_column_count(this->ptr());
+        this->column_names = std::vector<std::string>();
+        this->column_names.reserve(this->column_count);
+        for (int i = 0; i < this->column_count; i++) {
+            this->column_names.push_back(sqlite3_column_name(this->ptr(), i));
+        }
+    };
 
     ~sqlite_iter() { this->stmt.reset(); }
 
     // ITERATION
-    bool         done() { return this->finished; }
+    bool         done() { return this->iteration_finished; }
+
     sqlite_iter& next()
     {
         if (!this->done()) {
-            int returncode = sqlite3_step(this->ptr());
+            const int returncode = sqlite3_step(this->ptr());
             if (returncode == SQLITE_DONE) {
-                this->finished = true;
+                this->iteration_finished = true;
             }
+            this->iteration_step++;
         }
 
         return *this;
@@ -52,40 +76,59 @@ class sqlite_iter
     sqlite_iter& reset()
     {
         sqlite3_reset(this->ptr());
+        this->iteration_step = -1;
         return *this;
     }
 
-    sqlite_iter& operator++() { return this->next(); }
-    sqlite_iter& operator++(int) { return this->next(); }
+    int current_row() const noexcept { return this->iteration_step; }
+
+    int num_columns() const noexcept { return this->column_count; }
+
+    int column_index(const std::string& name) const noexcept
+    {
+        const ptrdiff_t pos = std::distance(
+          this->column_names.begin(), std::find(this->column_names.begin(), this->column_names.end(), name)
+        );
+
+        return pos >= this->column_names.size() ? -1 : pos;
+    }
+
+    //
+    const std::vector<std::string>& columns() const noexcept { return this->column_names; }
 
     // ACCESS
-    template<typename T, int col>
-    T get();
 
-    template<int col>
-    std::vector<uint8_t> get()
+    template<typename T>
+    inline GETENABLE(std::vector<uint8_t>) get(int col) const
     {
         return *reinterpret_cast<const std::vector<uint8_t>*>(sqlite3_column_blob(this->ptr(), col));
     }
 
-    template<int col>
-    double get()
+    template<typename T>
+    inline GETENABLE(double) get(int col) const
     {
         return sqlite3_column_double(this->ptr(), col);
     };
 
-    template<int col>
-    int get()
+    template<typename T>
+    inline GETENABLE(int) get(int col) const
     {
         return sqlite3_column_int(this->ptr(), col);
     };
 
-    template<int col>
-    std::string get()
+    template<typename T>
+    inline GETENABLE(std::string) get(int col) const
     {
         // TODO: this won't work with non-ASCII text
         return std::string(reinterpret_cast<const char*>(sqlite3_column_text(this->ptr(), col)));
     };
+
+    template<typename T>
+    inline T get(const std::string& name) const
+    {
+        const int index = this->column_index(name);
+        return this->get<T>(index);
+    }
 };
 
 class sqlite
@@ -95,11 +138,31 @@ class sqlite
     stmt_t   stmt = nullptr;
 
   public:
+    sqlite() = default;
+
     sqlite(const std::string& path)
     {
         sqlite3* conn;
-        sqlite3_open_v2(path.c_str(), &conn, SQLITE_OPEN_READONLY, NULL);
+        int      code = sqlite3_open_v2(path.c_str(), &conn, SQLITE_OPEN_READONLY, NULL);
+        if (code != SQLITE_OK) {
+            throw sqlite_error("sqlite3_open_v2", code);
+        }
         this->conn = sqlite_t(conn);
+    }
+
+    // move constructor
+    sqlite(sqlite&& db)
+    {
+        this->conn = std::move(db.conn);
+        this->stmt = db.stmt;
+    }
+
+    // move assignment operator
+    sqlite& operator=(sqlite&& db)
+    {
+        this->conn = std::move(db.conn);
+        this->stmt = db.stmt;
+        return *this;
     }
 
     ~sqlite()
@@ -115,21 +178,20 @@ class sqlite
      * @param statement String query
      * @return read-only SQLite row iterator (see: [sqlite_iter])
      */
-    const sqlite_iter* query(const std::string& statement)
+    sqlite_iter* query(const std::string& statement)
     {
         const auto    cstmt = statement.c_str();
         sqlite3_stmt* stmt;
-        int           code = sqlite3_prepare_v2(this->connection(), cstmt, sizeof cstmt, &stmt, NULL);
+        const int     code = sqlite3_prepare_v2(this->connection(), cstmt, statement.length() + 1, &stmt, NULL);
 
         if (code != SQLITE_OK) {
             // something happened, can probably switch on result codes
             // https://www.sqlite.org/rescode.html
-            auto errmsg = std::string("sqlite3_prepare_v2 returned code ") + std::to_string(code);
-            throw std::runtime_error(errmsg);
+            throw sqlite_error("sqlite3_prepare_v2", code);
         }
 
-        this->stmt              = stmt_t(stmt, sqlite_deleter{});
-        const sqlite_iter* iter = new sqlite_iter(this->stmt);
+        this->stmt        = stmt_t(stmt, sqlite_deleter{});
+        sqlite_iter* iter = new sqlite_iter(this->stmt);
         return iter;
     }
 };
