@@ -11,7 +11,8 @@ extern "C"
 #include <memory>
 #include <stdexcept>
 
-#define GETENABLE(TYPE) typename std::enable_if<std::is_same<T, TYPE>::value, TYPE>::type
+template<typename T, typename U>
+using enabled_t = std::enable_if_t<std::is_same<T, U>::value, U>;
 
 struct sqlite_deleter
 {
@@ -98,25 +99,25 @@ class sqlite_iter
     // ACCESS
 
     template<typename T>
-    inline GETENABLE(std::vector<uint8_t>) get(int col) const
+    inline enabled_t<T, std::vector<uint8_t>> get(int col) const
     {
         return *reinterpret_cast<const std::vector<uint8_t>*>(sqlite3_column_blob(this->ptr(), col));
     }
 
     template<typename T>
-    inline GETENABLE(double) get(int col) const
+    inline enabled_t<T, double> get(int col) const
     {
         return sqlite3_column_double(this->ptr(), col);
     };
 
     template<typename T>
-    inline GETENABLE(int) get(int col) const
+    inline enabled_t<T, int> get(int col) const
     {
         return sqlite3_column_int(this->ptr(), col);
     };
 
     template<typename T>
-    inline GETENABLE(std::string) get(int col) const
+    inline enabled_t<T, std::string> get(int col) const
     {
         // TODO: this won't work with non-ASCII text
         return std::string(reinterpret_cast<const char*>(sqlite3_column_text(this->ptr(), col)));
