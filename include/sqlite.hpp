@@ -21,6 +21,9 @@ class sqlite
      */
     sqlite(const std::string& path);
 
+    sqlite(sqlite& db);
+    sqlite& operator=(sqlite& db);
+
     /**
      * @brief Take ownership of a sqlite3 database
      *
@@ -49,11 +52,30 @@ class sqlite
     sqlite3* connection() const noexcept;
 
     /**
+     * @brief Check if SQLite database contains a given table
+     *
+     * @param table name of table
+     * @return true if table does exist
+     * @return false if table does not exist
+     */
+    bool has_table(const std::string& table) noexcept;
+
+    /**
      * Query the SQLite Database and get the result
      * @param statement String query
      * @return read-only SQLite row iterator (see: [sqlite_iter])
      */
     sqlite_iter* query(const std::string& statement);
+
+    /**
+     * @brief TODO!!!
+     *
+     * @param statement
+     * @param params
+     * @return sqlite_iter*
+     */
+    template<typename... T>
+    sqlite_iter* query(const std::string& statement, T const&... params);
 };
 
 inline sqlite::sqlite(const std::string& path)
@@ -64,6 +86,19 @@ inline sqlite::sqlite(const std::string& path)
         throw sqlite_error("sqlite3_open_v2", code);
     }
     this->conn = sqlite_t(conn);
+}
+
+inline sqlite::sqlite(sqlite& db)
+{
+    this->conn = std::move(db.conn);
+    this->stmt = db.stmt;
+}
+
+inline sqlite& sqlite::operator=(sqlite& db)
+{
+    this->conn = std::move(db.conn);
+    this->stmt = db.stmt;
+    return *this;
 }
 
 inline sqlite::sqlite(sqlite&& db)
@@ -90,16 +125,44 @@ inline sqlite3* sqlite::connection() const noexcept
     return this->conn.get();
 }
 
+inline bool sqlite::has_table(const std::string& table) noexcept
+{
+    const auto q = this->query("SELECT 1 from sqlite_master WHERE type='table' AND name = ?", table);
+    q->next();
+    return static_cast<bool>(q->get<int>(0));
+};
+
 inline sqlite_iter* sqlite::query(const std::string& statement)
 {
-    const auto    cstmt = statement.c_str();
     sqlite3_stmt* stmt;
-    const int     code = sqlite3_prepare_v2(this->connection(), cstmt, statement.length() + 1, &stmt, NULL);
+    const auto    cstmt = statement.c_str();
+    const int     code  = sqlite3_prepare_v2(this->connection(), cstmt, statement.length() + 1, &stmt, NULL);
 
     if (code != SQLITE_OK) {
         // something happened, can probably switch on result codes
         // https://www.sqlite.org/rescode.html
         throw sqlite_error("sqlite3_prepare_v2", code);
+    }
+
+    this->stmt        = stmt_t(stmt, sqlite_deleter{});
+    sqlite_iter* iter = new sqlite_iter(this->stmt);
+    return iter;
+}
+
+template<typename... T>
+inline sqlite_iter* sqlite::query(const std::string& statement, T const&... params)
+{
+    sqlite3_stmt* stmt;
+    const auto    cstmt = statement.c_str();
+    const int     code  = sqlite3_prepare_v2(this->connection(), cstmt, statement.length() + 1, &stmt, NULL);
+
+    if (code != SQLITE_OK) {
+        throw sqlite_error("sqlite3_prepare_v2", code);
+    }
+
+    std::vector<std::string> binds{ { params... } };
+    for (size_t i = 0; i < binds.size(); i++) {
+        sqlite3_bind_text(stmt, i + 1, binds[i].c_str(), -1, SQLITE_STATIC);
     }
 
     this->stmt        = stmt_t(stmt, sqlite_deleter{});

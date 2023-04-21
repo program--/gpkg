@@ -4,10 +4,15 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+file(GLOB TESTFILES "*_test.cpp")
+add_library(test_sources OBJECT utils.hpp ${TESTFILES})
+target_link_libraries(test_sources gpkg)
+target_link_libraries(test_sources doctest::doctest)
+
 add_executable(tests main.cpp)
 target_compile_features(tests PRIVATE cxx_std_14)
-target_link_libraries(tests PRIVATE gpkg)
-target_link_libraries(tests PRIVATE doctest::doctest)
+target_link_libraries(tests test_sources)
+target_link_libraries(tests doctest::doctest)
 
 include(CTest)
 include(Doctest)

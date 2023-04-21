@@ -4,46 +4,42 @@
 #include <boost/variant.hpp>
 
 #include "sqlite.hpp"
-
-using field = boost::variant<int, double, bool, std::string>;
-
-class feature
-{
-  private:
-    int                                    id;
-    std::vector<uint8_t>                   geometry;
-    std::unordered_map<std::string, field> properties;
-
-  public:
-    template<typename T>
-    const T& get(const std::string& property) noexcept
-    {
-        return boost::get<T>(this->properties[property]);
-    }
-
-    template<typename T>
-    void set(const std::string& property, T value) noexcept
-    {
-        this->properties[property] = value;
-    }
-
-    const std::vector<uint8_t>& wkb() const noexcept { return this->geometry; }
-};
+#include "gpkg/feature.hpp"
 
 class gpkg
 {
   private:
-    const sqlite& db;
+    std::unique_ptr<sqlite>  db = nullptr;
+
+    std::vector<std::string> layer_names;
 
   public:
+    gpkg() = default;
     gpkg(const std::string& path)
-      : gpkg(sqlite(path)){};
+    {
+        sqlite s     = sqlite(path);
+        this->db     = std::make_unique<sqlite>(s);
+        const auto q = this->db->query("SELECT table_name FROM gpkg_contents ORDER BY data_type DESC;");
 
-    gpkg(const sqlite& db)
-      : db(db){};
+        q->next();
+        while (!q->done()) {
+            this->layer_names.push_back(q->get<std::string>(0));
+            q->next();
+        }
+    };
 
-    gpkg(const sqlite&& db)
-      : db(db){};
+    gpkg(gpkg&& g)
+    {
+        this->db          = std::move(g.db);
+        this->layer_names = std::move(g.layer_names);
+    }
+
+    gpkg& operator=(gpkg&& g)
+    {
+        this->db          = std::move(g.db);
+        this->layer_names = std::move(g.layer_names);
+        return *this;
+    }
 
     //
     int num_layers() const noexcept;
@@ -53,3 +49,24 @@ class gpkg
     const std::vector<std::string>& layers() const noexcept;
     const std::vector<feature>&     features(const std::string&) const;
 };
+
+inline int gpkg::num_layers() const noexcept
+{
+    return this->layer_names.size();
+}
+
+inline const std::vector<std::string>& gpkg::layers() const noexcept
+{
+    return this->layer_names;
+}
+
+inline int gpkg::num_features(const std::string& layer) const
+{
+    if (this->db->has_table(layer)) {
+        const auto q = this->db->query("SELECT COUNT(*) FROM " + layer + ";");
+        q->next();
+        return q->get<int>(0);
+    } else {
+        return -1;
+    }
+}
